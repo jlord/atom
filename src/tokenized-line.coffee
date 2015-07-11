@@ -102,10 +102,11 @@ class TokenizedLine
           substringEnd += 1
         else
           if (screenColumn + 1) % @tabLength is 0
-            @specialTokens[tokenIndex] = SoftTab
             suffix = @tags[tokenIndex] - @tabLength
-            @tags.splice(tokenIndex, 1, @tabLength)
-            @tags.splice(tokenIndex + 1, 0, suffix) if suffix > 0
+            if suffix >= 0
+              @specialTokens[tokenIndex] = SoftTab
+              @tags.splice(tokenIndex, 1, @tabLength)
+              @tags.splice(tokenIndex + 1, 0, suffix) if suffix > 0
 
           if @invisibles?.space
             if substringEnd > substringStart
@@ -220,17 +221,20 @@ class TokenizedLine
   copy: ->
     copy = new TokenizedLine
     copy.tokenIterator = @tokenIterator
-    copy.indentLevel = @indentLevel
     copy.openScopes = @openScopes
     copy.text = @text
     copy.tags = @tags
     copy.specialTokens = @specialTokens
+    copy.startBufferColumn = @startBufferColumn
+    copy.bufferDelta = @bufferDelta
+    copy.ruleStack = @ruleStack
+    copy.lineEnding = @lineEnding
+    copy.invisibles = @invisibles
+    copy.endOfLineInvisibles = @endOfLineInvisibles
+    copy.indentLevel = @indentLevel
+    copy.tabLength = @tabLength
     copy.firstNonWhitespaceIndex = @firstNonWhitespaceIndex
     copy.firstTrailingWhitespaceIndex = @firstTrailingWhitespaceIndex
-    copy.lineEnding = @lineEnding
-    copy.endOfLineInvisibles = @endOfLineInvisibles
-    copy.ruleStack = @ruleStack
-    copy.startBufferColumn = @startBufferColumn
     copy.fold = @fold
     copy
 

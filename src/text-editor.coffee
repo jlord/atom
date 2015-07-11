@@ -75,7 +75,7 @@ class TextEditor extends Model
     'autoDecreaseIndentForBufferRow', 'toggleLineCommentForBufferRow', 'toggleLineCommentsForBufferRows',
     toProperty: 'languageMode'
 
-  constructor: ({@softTabs, initialLine, initialColumn, tabLength, softWrapped, @displayBuffer, buffer, registerEditor, suppressCursorCreation, @mini, @placeholderText, lineNumberGutterVisible}={}) ->
+  constructor: ({@softTabs, initialLine, initialColumn, tabLength, softWrapped, @displayBuffer, buffer, registerEditor, suppressCursorCreation, @mini, @placeholderText, lineNumberGutterVisible, largeFileMode}={}) ->
     super
 
     @emitter = new Emitter
@@ -84,7 +84,7 @@ class TextEditor extends Model
     @selections = []
 
     buffer ?= new TextBuffer
-    @displayBuffer ?= new DisplayBuffer({buffer, tabLength, softWrapped, ignoreInvisibles: @mini})
+    @displayBuffer ?= new DisplayBuffer({buffer, tabLength, softWrapped, ignoreInvisibles: @mini, largeFileMode})
     @buffer = @displayBuffer.buffer
     @softTabs = @usesSoftTabs() ? @softTabs ? atom.config.get('editor.softTabs') ? true
 
@@ -128,7 +128,15 @@ class TextEditor extends Model
     displayBuffer: @displayBuffer.serialize()
 
   deserializeParams: (params) ->
-    params.displayBuffer = DisplayBuffer.deserialize(params.displayBuffer)
+    try
+      displayBuffer = DisplayBuffer.deserialize(params.displayBuffer)
+    catch error
+      if error.syscall is 'read'
+        return # Error reading the file, don't deserialize an editor for it
+      else
+        throw error
+
+    params.displayBuffer = displayBuffer
     params.registerEditor = true
     params
 
@@ -155,10 +163,10 @@ class TextEditor extends Model
 
   subscribeToDisplayBuffer: ->
     @disposables.add @displayBuffer.onDidCreateMarker @handleMarkerCreated
-    @disposables.add @displayBuffer.onDidUpdateMarkers => @mergeIntersectingSelections()
     @disposables.add @displayBuffer.onDidChangeGrammar => @handleGrammarChange()
     @disposables.add @displayBuffer.onDidTokenize => @handleTokenization()
     @disposables.add @displayBuffer.onDidChange (e) =>
+      @mergeIntersectingSelections()
       @emit 'screen-lines-changed', e if includeDeprecatedAPIs
       @emitter.emit 'did-change', e
 
@@ -317,7 +325,7 @@ class TextEditor extends Model
   onWillInsertText: (callback) ->
     @emitter.on 'will-insert-text', callback
 
-  # Extended: Calls your `callback` adter text has been inserted.
+  # Extended: Calls your `callback` after text has been inserted.
   #
   # * `callback` {Function}
   #   * `event` event {Object}
@@ -452,6 +460,9 @@ class TextEditor extends Model
   # TODO Remove once the tabs package no longer uses .on subscriptions
   onDidChangeIcon: (callback) ->
     @emitter.on 'did-change-icon', callback
+
+  onDidUpdateMarkers: (callback) ->
+    @displayBuffer.onDidUpdateMarkers(callback)
 
   # Public: Retrieves the current {TextBuffer}.
   getBuffer: -> @buffer
@@ -627,6 +638,10 @@ class TextEditor extends Model
     else
       @isModified() and not @buffer.hasMultipleEditors()
 
+  # Returns an {Object} to configure dialog shown when this editor is saved
+  # via {Pane::saveItemAs}.
+  getSaveDialogOptions: -> {}
+
   checkoutHeadRevision: ->
     if filePath = this.getPath()
       atom.project.repositoryForDirectory(new Directory(path.dirname(filePath)))
@@ -734,6 +749,8 @@ class TextEditor extends Model
   ###
 
   # Essential: Replaces the entire contents of the buffer with the given {String}.
+  #
+  # * `text` A {String} to replace with
   setText: (text) -> @buffer.setText(text)
 
   # Essential: Set the text in the given {Range} in buffer coordinates.
@@ -755,31 +772,24 @@ class TextEditor extends Model
   # Returns a {Range} when the text has been inserted
   # Returns a {Boolean} false when the text has not been inserted
   insertText: (text, options={}) ->
-    willInsert = true
-    cancel = -> willInsert = false
-    willInsertEvent = {cancel, text}
-    @emit('will-insert-text', willInsertEvent) if includeDeprecatedAPIs
-    @emitter.emit 'will-insert-text', willInsertEvent
+    return false unless @emitWillInsertTextEvent(text)
 
     groupingInterval = if options.groupUndo
       atom.config.get('editor.undoGroupingInterval')
     else
       0
 
-    if willInsert
-      options.autoIndentNewline ?= @shouldAutoIndent()
-      options.autoDecreaseIndent ?= @shouldAutoIndent()
-      @mutateSelectedText(
-        (selection) =>
-          range = selection.insertText(text, options)
-          didInsertEvent = {text, range}
-          @emit('did-insert-text', didInsertEvent) if includeDeprecatedAPIs
-          @emitter.emit 'did-insert-text', didInsertEvent
-          range
-        , groupingInterval
-      )
-    else
-      false
+    options.autoIndentNewline ?= @shouldAutoIndent()
+    options.autoDecreaseIndent ?= @shouldAutoIndent()
+    @mutateSelectedText(
+      (selection) =>
+        range = selection.insertText(text, options)
+        didInsertEvent = {text, range}
+        @emit('did-insert-text', didInsertEvent) if includeDeprecatedAPIs
+        @emitter.emit 'did-insert-text', didInsertEvent
+        range
+      , groupingInterval
+    )
 
   # Essential: For each selection, replace the selected text with a newline.
   insertNewline: ->
@@ -1060,6 +1070,18 @@ class TextEditor extends Model
   # next word boundary.
   deleteToNextWordBoundary: ->
     @mutateSelectedText (selection) -> selection.deleteToNextWordBoundary()
+
+  # Extended: For each selection, if the selection is empty, delete all characters
+  # of the containing subword following the cursor. Otherwise delete the selected
+  # text.
+  deleteToBeginningOfSubword: ->
+    @mutateSelectedText (selection) -> selection.deleteToBeginningOfSubword()
+
+  # Extended: For each selection, if the selection is empty, delete all characters
+  # of the containing subword following the cursor. Otherwise delete the selected
+  # text.
+  deleteToEndOfSubword: ->
+    @mutateSelectedText (selection) -> selection.deleteToEndOfSubword()
 
   # Extended: For each selection, if the selection is empty, delete all characters
   # of the containing line that precede the cursor. Otherwise delete the
@@ -1378,6 +1400,9 @@ class TextEditor extends Model
   decorationForId: (id) ->
     @displayBuffer.decorationForId(id)
 
+  decorationsForMarkerId: (id) ->
+    @displayBuffer.decorationsForMarkerId(id)
+
   ###
   Section: Markers
   ###
@@ -1480,6 +1505,25 @@ class TextEditor extends Model
   findMarkers: (properties) ->
     @displayBuffer.findMarkers(properties)
 
+  # Extended: Observe changes in the set of markers that intersect a particular
+  # region of the editor.
+  #
+  # * `callback` A {Function} to call whenever one or more {Marker}s appears,
+  #    disappears, or moves within the given region.
+  #   * `event` An {Object} with the following keys:
+  #     * `insert` A {Set} containing the ids of all markers that appeared
+  #        in the range.
+  #     * `update` A {Set} containing the ids of all markers that moved within
+  #        the region.
+  #     * `remove` A {Set} containing the ids of all markers that disappeared
+  #        from the region.
+  #
+  # Returns a {MarkerObservationWindow}, which allows you to specify the region
+  # of interest by calling {MarkerObservationWindow::setBufferRange} or
+  # {MarkerObservationWindow::setScreenRange}.
+  observeMarkers: (callback) ->
+    @displayBuffer.observeMarkers(callback)
+
   # Extended: Get the {Marker} for the given marker id.
   #
   # * `id` {Number} id of the marker
@@ -1527,6 +1571,16 @@ class TextEditor extends Model
   #     position. Defaults to true.
   setCursorBufferPosition: (position, options) ->
     @moveCursors (cursor) -> cursor.setBufferPosition(position, options)
+
+  # Essential: Get a {Cursor} at given screen coordinates {Point}
+  #
+  # * `position` A {Point} or {Array} of `[row, column]`
+  #
+  # Returns the first matched {Cursor} or undefined
+  getCursorAtScreenPosition: (position) ->
+    for cursor in @cursors
+      return cursor if cursor.getScreenPosition().isEqual(position)
+    undefined
 
   # Essential: Get the position of the most recently added cursor in screen
   # coordinates.
@@ -1653,6 +1707,14 @@ class TextEditor extends Model
   # Extended: Move every cursor to the next word boundary.
   moveToNextWordBoundary: ->
     @moveCursors (cursor) -> cursor.moveToNextWordBoundary()
+
+  # Extended: Move every cursor to the previous subword boundary.
+  moveToPreviousSubwordBoundary: ->
+    @moveCursors (cursor) -> cursor.moveToPreviousSubwordBoundary()
+
+  # Extended: Move every cursor to the next subword boundary.
+  moveToNextSubwordBoundary: ->
+    @moveCursors (cursor) -> cursor.moveToNextSubwordBoundary()
 
   # Extended: Move every cursor to the beginning of the next paragraph.
   moveToBeginningOfNextParagraph: ->
@@ -1971,6 +2033,20 @@ class TextEditor extends Model
   # word while preserving the selection's tail position.
   selectToEndOfWord: ->
     @expandSelectionsForward (selection) -> selection.selectToEndOfWord()
+
+  # Extended: For each selection, move its cursor to the preceding subword
+  # boundary while maintaining the selection's tail position.
+  #
+  # This method may merge selections that end up intersecting.
+  selectToPreviousSubwordBoundary: ->
+    @expandSelectionsBackward (selection) -> selection.selectToPreviousSubwordBoundary()
+
+  # Extended: For each selection, move its cursor to the next subword boundary
+  # while maintaining the selection's tail position.
+  #
+  # This method may merge selections that end up intersecting.
+  selectToNextSubwordBoundary: ->
+    @expandSelectionsForward (selection) -> selection.selectToNextSubwordBoundary()
 
   # Essential: For each cursor, select the containing line.
   #
@@ -2398,13 +2474,14 @@ class TextEditor extends Model
     options.autoIndent ?= @shouldAutoIndent()
     @mutateSelectedText (selection) -> selection.indent(options)
 
-  # Constructs the string used for tabs.
-  buildIndentString: (number, column=0) ->
+  # Constructs the string used for indents.
+  buildIndentString: (level, column=0) ->
     if @getSoftTabs()
       tabStopViolation = column % @getTabLength()
-      _.multiplyString(" ", Math.floor(number * @getTabLength()) - tabStopViolation)
+      _.multiplyString(" ", Math.floor(level * @getTabLength()) - tabStopViolation)
     else
-      _.multiplyString("\t", Math.floor(number))
+      excessWhitespace = _.multiplyString(' ', Math.round((level - Math.floor(level)) * @getTabLength()))
+      _.multiplyString("\t", Math.floor(level)) + excessWhitespace
 
   ###
   Section: Grammars
@@ -2518,6 +2595,8 @@ class TextEditor extends Model
   # * `options` (optional) See {Selection::insertText}.
   pasteText: (options={}) ->
     {text: clipboardText, metadata} = atom.clipboard.readWithMetadata()
+    return false unless @emitWillInsertTextEvent(clipboardText)
+
     metadata ?= {}
     options.autoIndent = @shouldAutoIndentOnPaste()
 
@@ -2892,6 +2971,14 @@ class TextEditor extends Model
     "<TextEditor #{@id}>"
 
   logScreenLines: (start, end) -> @displayBuffer.logLines(start, end)
+
+  emitWillInsertTextEvent: (text) ->
+    result = true
+    cancel = -> result = false
+    willInsertEvent = {cancel, text}
+    @emit('will-insert-text', willInsertEvent) if includeDeprecatedAPIs
+    @emitter.emit 'will-insert-text', willInsertEvent
+    result
 
 if includeDeprecatedAPIs
   TextEditor.delegatesProperties '$lineHeightInPixels', '$defaultCharWidth', '$height', '$width',

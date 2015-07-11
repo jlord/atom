@@ -54,14 +54,14 @@ module.exports = (grunt) ->
       if process.platform in ['darwin', 'linux']
         options =
           cmd: appPath
-          args: ['--test', "--resource-path=#{resourcePath}", "--spec-directory=#{path.join(packagePath, 'spec')}", '--one']
+          args: ['--test', "--resource-path=#{resourcePath}", "--spec-directory=#{path.join(packagePath, 'spec')}"]
           opts:
             cwd: packagePath
             env: _.extend({}, process.env, ATOM_PATH: rootDir)
       else if process.platform is 'win32'
         options =
           cmd: process.env.comspec
-          args: ['/c', appPath, '--test', "--resource-path=#{resourcePath}", "--spec-directory=#{path.join(packagePath, 'spec')}", "--log-file=ci.log", '--one']
+          args: ['/c', appPath, '--test', "--resource-path=#{resourcePath}", "--spec-directory=#{path.join(packagePath, 'spec')}", "--log-file=ci.log"]
           opts:
             cwd: packagePath
             env: _.extend({}, process.env, ATOM_PATH: rootDir)
@@ -104,7 +104,7 @@ module.exports = (grunt) ->
     else if process.platform is 'win32'
       options =
         cmd: process.env.comspec
-        args: ['/c', appPath, '--test', "--resource-path=#{resourcePath}", "--spec-directory=#{coreSpecsPath}", "--log-file=ci.log"]
+        args: ['/c', appPath, '--test', "--resource-path=#{resourcePath}", "--spec-directory=#{coreSpecsPath}", '--log-file=ci.log']
         opts:
           env: _.extend({}, process.env,
             ATOM_INTEGRATION_TESTS_ENABLED: true
@@ -131,8 +131,25 @@ module.exports = (grunt) ->
       else
         async.parallel
 
-    method [runCoreSpecs, runPackageSpecs], (error, results) ->
-      [coreSpecFailed, failedPackages] = results
+    specs =
+      if process.env.ATOM_SPECS_TASK is 'packages'
+        [runPackageSpecs]
+      else if process.env.ATOM_SPECS_TASK is 'core'
+        [runCoreSpecs]
+      else
+        [runCoreSpecs, runPackageSpecs]
+
+    method specs, (error, results) ->
+      failedPackages = []
+      coreSpecFailed = null
+
+      if process.env.ATOM_SPECS_TASK is 'packages'
+        [failedPackages] = results
+      else if process.env.ATOM_SPECS_TASK is 'core'
+        [coreSpecFailed] = results
+      else
+        [coreSpecFailed, failedPackages] = results
+
       elapsedTime = Math.round((Date.now() - startTime) / 100) / 10
       grunt.log.ok("Total spec time: #{elapsedTime}s using #{concurrency} cores")
       failures = failedPackages

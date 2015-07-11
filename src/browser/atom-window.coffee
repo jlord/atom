@@ -1,5 +1,6 @@
 BrowserWindow = require 'browser-window'
 app = require 'app'
+dialog = require 'dialog'
 path = require 'path'
 fs = require 'fs'
 url = require 'url'
@@ -18,7 +19,7 @@ class AtomWindow
   isSpec: null
 
   constructor: (settings={}) ->
-    {@resourcePath, pathToOpen, locationsToOpen, @isSpec, @exitWhenDone, @safeMode, @devMode, @apiPreviewMode} = settings
+    {@resourcePath, pathToOpen, locationsToOpen, @isSpec, @exitWhenDone, @safeMode, @devMode} = settings
     locationsToOpen ?= [{pathToOpen}] if pathToOpen
     locationsToOpen ?= []
 
@@ -47,7 +48,6 @@ class AtomWindow
     loadSettings.resourcePath = @resourcePath
     loadSettings.devMode ?= false
     loadSettings.safeMode ?= false
-    loadSettings.apiPreviewMode ?= false
 
     # Only send to the first non-spec window created
     if @constructor.includeShellLoadTime and not @isSpec
@@ -87,17 +87,16 @@ class AtomWindow
       hash: encodeURIComponent(JSON.stringify(loadSettings))
 
   getLoadSettings: ->
-    if @browserWindow.webContents.loaded
+    if @browserWindow.webContents?.loaded
       hash = url.parse(@browserWindow.webContents.getUrl()).hash.substr(1)
       JSON.parse(decodeURIComponent(hash))
 
   hasProjectPath: -> @getLoadSettings().initialPaths?.length > 0
 
   setupContextMenu: ->
-    ContextMenu = null
+    ContextMenu = require './context-menu'
 
     @browserWindow.on 'context-menu', (menuTemplate) =>
-      ContextMenu ?= require './context-menu'
       new ContextMenu(menuTemplate, this)
 
   containsPaths: (paths) ->
@@ -127,7 +126,6 @@ class AtomWindow
     @browserWindow.on 'unresponsive', =>
       return if @isSpec
 
-      dialog = require 'dialog'
       chosen = dialog.showMessageBox @browserWindow,
         type: 'warning'
         buttons: ['Close', 'Keep Waiting']
@@ -138,7 +136,6 @@ class AtomWindow
     @browserWindow.webContents.on 'crashed', =>
       global.atomApplication.exit(100) if @exitWhenDone
 
-      dialog = require 'dialog'
       chosen = dialog.showMessageBox @browserWindow,
         type: 'warning'
         buttons: ['Close Window', 'Reload', 'Keep It Open']
@@ -166,7 +163,6 @@ class AtomWindow
 
   openLocations: (locationsToOpen) ->
     if @loaded
-      @focus()
       @sendMessage 'open-locations', locationsToOpen
     else
       @browserWindow.once 'window:loaded', => @openLocations(locationsToOpen)

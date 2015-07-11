@@ -7,7 +7,6 @@ LineNumberGutterComponent = require './line-number-gutter-component'
 
 module.exports =
 class GutterContainerComponent
-
   constructor: ({@onLineNumberGutterMouseDown, @editor}) ->
     # An array of objects of the form: {name: {String}, component: {Object}}
     @gutterComponents = []
@@ -16,7 +15,12 @@ class GutterContainerComponent
 
     @domNode = document.createElement('div')
     @domNode.classList.add('gutter-container')
-    @domNode.style.display = 'flex';
+    @domNode.style.display = 'flex'
+
+  destroy: ->
+    for {name, component} in @gutterComponents
+      component.destroy?()
+    return
 
   getDomNode: ->
     @domNode

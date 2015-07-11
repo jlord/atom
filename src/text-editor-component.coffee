@@ -18,7 +18,7 @@ class TextEditorComponent
   scrollSensitivity: 0.4
   cursorBlinkPeriod: 800
   cursorBlinkResumeDelay: 100
-  lineOverdrawMargin: 15
+  tileSize: 12
 
   pendingScrollTop: null
   pendingScrollLeft: null
@@ -36,8 +36,8 @@ class TextEditorComponent
   gutterComponent: null
   mounted: true
 
-  constructor: ({@editor, @hostElement, @rootElement, @stylesElement, @useShadowDOM, lineOverdrawMargin}) ->
-    @lineOverdrawMargin = lineOverdrawMargin if lineOverdrawMargin?
+  constructor: ({@editor, @hostElement, @rootElement, @stylesElement, @useShadowDOM, tileSize}) ->
+    @tileSize = tileSize if tileSize?
     @disposables = new CompositeDisposable
 
     @observeConfig()
@@ -47,7 +47,7 @@ class TextEditorComponent
       model: @editor
       scrollTop: @editor.getScrollTop()
       scrollLeft: @editor.getScrollLeft()
-      lineOverdrawMargin: lineOverdrawMargin
+      tileSize: tileSize
       cursorBlinkPeriod: @cursorBlinkPeriod
       cursorBlinkResumeDelay: @cursorBlinkResumeDelay
       stoppedScrollingDelay: 200
@@ -106,6 +106,7 @@ class TextEditorComponent
     @mounted = false
     @disposables.dispose()
     @presenter.destroy()
+    @gutterContainerComponent?.destroy()
     window.removeEventListener 'resize', @requestHeightAndWidthMeasurement
 
   getDomNode: ->
@@ -195,7 +196,7 @@ class TextEditorComponent
       @updateRequested = true
       atom.views.updateDocument =>
         @updateRequested = false
-        @updateSync() if @editor.isAlive()
+        @updateSync() if @canUpdate()
       atom.views.readDocument(@readAfterUpdateSync)
 
   canUpdate: ->
@@ -392,7 +393,11 @@ class TextEditorComponent
         if shiftKey
           @editor.selectToScreenPosition(screenPosition)
         else if metaKey or (ctrlKey and process.platform isnt 'darwin')
-          @editor.addCursorAtScreenPosition(screenPosition)
+          cursorAtScreenPosition = @editor.getCursorAtScreenPosition(screenPosition)
+          if cursorAtScreenPosition and @editor.hasMultipleCursors()
+            cursorAtScreenPosition.destroy()
+          else
+            @editor.addCursorAtScreenPosition(screenPosition)
         else
           @editor.setCursorScreenPosition(screenPosition)
       when 2
@@ -724,9 +729,18 @@ class TextEditorComponent
   consolidateSelections: (e) ->
     e.abortKeyBinding() unless @editor.consolidateSelections()
 
-  lineNodeForScreenRow: (screenRow) -> @linesComponent.lineNodeForScreenRow(screenRow)
+  lineNodeForScreenRow: (screenRow) ->
+    tileRow = @presenter.tileForRow(screenRow)
+    tileComponent = @linesComponent.getComponentForTile(tileRow)
 
-  lineNumberNodeForScreenRow: (screenRow) -> @gutterContainerComponent.getLineNumberGutterComponent().lineNumberNodeForScreenRow(screenRow)
+    tileComponent?.lineNodeForScreenRow(screenRow)
+
+  lineNumberNodeForScreenRow: (screenRow) ->
+    tileRow = @presenter.tileForRow(screenRow)
+    gutterComponent = @gutterContainerComponent.getLineNumberGutterComponent()
+    tileComponent = gutterComponent.getComponentForTile(tileRow)
+
+    tileComponent?.lineNumberNodeForScreenRow(screenRow)
 
   screenRowForNode: (node) ->
     while node?
@@ -768,8 +782,8 @@ class TextEditorComponent
     {clientX, clientY} = event
 
     linesClientRect = @linesComponent.getDomNode().getBoundingClientRect()
-    top = clientY - linesClientRect.top
-    left = clientX - linesClientRect.left
+    top = clientY - linesClientRect.top + @presenter.scrollTop
+    left = clientX - linesClientRect.left + @presenter.scrollLeft
     {top, left}
 
   getModel: ->

@@ -1,3 +1,6 @@
+fs = require 'fs-plus'
+path = require 'path'
+temp = require 'temp'
 clipboard = require '../src/safe-clipboard'
 TextEditor = require '../src/text-editor'
 
@@ -19,6 +22,17 @@ describe "TextEditor", ->
       atom.packages.activatePackage('language-javascript')
 
   describe "when the editor is deserialized", ->
+    it "returns undefined when the path cannot be read", ->
+      pathToOpen = path.join(temp.mkdirSync(), 'file.txt')
+      editor1 = null
+
+      waitsForPromise ->
+        atom.project.open(pathToOpen).then (o) -> editor1 = o
+
+      runs ->
+        fs.mkdirSync(pathToOpen)
+        expect(editor1.testSerialization()).toBeUndefined()
+
     it "restores selections and folds based on markers in the buffer", ->
       editor.setSelectedBufferRange([[1, 2], [3, 4]])
       editor.addSelectionForBufferRange([[5, 6], [7, 5]], reversed: true)
@@ -51,6 +65,25 @@ describe "TextEditor", ->
       editor2 = TextEditor.deserialize(state)
 
       expect(editor.tokenizedLineForScreenRow(0).invisibles.eol).toBe '?'
+
+  describe "when the editor is constructed with the largeFileMode option set to true", ->
+    it "loads the editor but doesn't tokenize", ->
+      editor = null
+
+      waitsForPromise ->
+        atom.workspace.open('sample.js', largeFileMode: true).then (o) -> editor = o
+
+      runs ->
+        buffer = editor.getBuffer()
+        expect(editor.tokenizedLineForScreenRow(0).text).toBe buffer.lineForRow(0)
+        expect(editor.tokenizedLineForScreenRow(0).tokens.length).toBe 1
+        expect(editor.tokenizedLineForScreenRow(1).tokens.length).toBe 2 # soft tab
+        expect(editor.tokenizedLineForScreenRow(12).text).toBe buffer.lineForRow(12)
+        expect(editor.tokenizedLineForScreenRow(0).tokens.length).toBe 1
+        expect(editor.getCursorScreenPosition()).toEqual [0, 0]
+        editor.insertText('hey"')
+        expect(editor.tokenizedLineForScreenRow(0).tokens.length).toBe 1
+        expect(editor.tokenizedLineForScreenRow(1).tokens.length).toBe 2 # sof tab
 
   describe "when the editor is constructed with an initialLine option", ->
     it "positions the cursor on the specified line", ->
@@ -883,6 +916,12 @@ describe "TextEditor", ->
         editor.setCursorBufferPosition([3, 1])
         expect(editor.getCurrentParagraphBufferRange()).toBeUndefined()
 
+    describe "getCursorAtScreenPosition(screenPosition)", ->
+      it "returns the cursor at the given screenPosition", ->
+        cursor1 = editor.addCursorAtScreenPosition([0, 2])
+        cursor2 = editor.getCursorAtScreenPosition(cursor1.getScreenPosition())
+        expect(cursor2).toBe cursor1
+
     describe "::getCursorScreenPositions()", ->
       it "returns the cursor positions in the order they were added", ->
         editor.foldBufferRow(4)
@@ -902,7 +941,7 @@ describe "TextEditor", ->
         it "returns the existing cursor", ->
           cursor1 = editor.addCursorAtScreenPosition([0, 2])
           cursor2 = editor.addCursorAtScreenPosition([0, 2])
-          expect(cursor2.marker).toBe cursor1.marker
+          expect(cursor2).toBe cursor1
 
     describe "addCursorAtBufferPosition(bufferPosition)", ->
       describe "when a cursor already exists at the position", ->
@@ -2886,38 +2925,74 @@ describe "TextEditor", ->
           expect(editor.lineTextForBufferRow(0)).toBe "var first = function () {"
           expect(editor.lineTextForBufferRow(1)).toBe "  var first = function(items) {"
 
+        it "notifies ::onWillInsertText observers", ->
+          insertedStrings = []
+          editor.onWillInsertText ({text, cancel}) ->
+            insertedStrings.push(text)
+            cancel()
+
+          atom.clipboard.write("hello")
+          editor.pasteText()
+
+          expect(insertedStrings).toEqual ["hello"]
+
         describe "when `autoIndentOnPaste` is true", ->
           beforeEach ->
             atom.config.set("editor.autoIndentOnPaste", true)
 
-          describe "when only whitespace precedes the cursor", ->
+          describe "when pasting multiple lines before any non-whitespace characters", ->
             it "auto-indents the lines spanned by the pasted text, based on the first pasted line", ->
-              expect(editor.indentationForBufferRow(5)).toBe(3)
-
               atom.clipboard.write("a(x);\n  b(x);\n    c(x);\n", indentBasis: 0)
               editor.setCursorBufferPosition([5, 0])
               editor.pasteText()
 
-              # Adjust the indentation of the pasted block
+              # Adjust the indentation of the pasted lines while preserving
+              # their indentation relative to each other. Also preserve the
+              # indentation of the following line.
+              expect(editor.lineTextForBufferRow(5)).toBe "      a(x);"
+              expect(editor.lineTextForBufferRow(6)).toBe "        b(x);"
+              expect(editor.lineTextForBufferRow(7)).toBe "          c(x);"
+              expect(editor.lineTextForBufferRow(8)).toBe "      current = items.shift();"
+
+            it "auto-indents lines with a mix of hard tabs and spaces without removing spaces", ->
+              editor.setSoftTabs(false)
               expect(editor.indentationForBufferRow(5)).toBe(3)
-              expect(editor.indentationForBufferRow(6)).toBe(4)
-              expect(editor.indentationForBufferRow(7)).toBe(5)
 
-              # Preserve the indentation of the next row
-              expect(editor.indentationForBufferRow(8)).toBe(3)
+              atom.clipboard.write("/**\n\t * testing\n\t * indent\n\t **/\n", indentBasis: 1)
+              editor.setCursorBufferPosition([5, 0])
+              editor.pasteText()
 
-          describe "when non-whitespace characters precede the cursor", ->
-            it "does not auto-indent the first line being pasted", ->
+              # Do not lose the alignment spaces
+              expect(editor.lineTextForBufferRow(5)).toBe("\t\t\t/**")
+              expect(editor.lineTextForBufferRow(6)).toBe("\t\t\t * testing")
+              expect(editor.lineTextForBufferRow(7)).toBe("\t\t\t * indent")
+              expect(editor.lineTextForBufferRow(8)).toBe("\t\t\t **/")
+
+          describe "when pasting a single line of text", ->
+            it "does not auto-indent the text", ->
+              atom.clipboard.write("a(x);", indentBasis: 0)
+              editor.setCursorBufferPosition([5, 0])
+              editor.pasteText()
+
+              expect(editor.lineTextForBufferRow(5)).toBe "a(x);      current = items.shift();"
+              expect(editor.lineTextForBufferRow(6)).toBe "      current < pivot ? left.push(current) : right.push(current);"
+
+          describe "when pasting on a line after non-whitespace characters", ->
+            it "does not auto-indent the affected line", ->
+              # Before the paste, the indentation is non-standard.
               editor.setText """
-              if (x) {
-                  y();
-              }
+                if (x) {
+                    y();
+                }
               """
 
-              atom.clipboard.write(" z();")
+              atom.clipboard.write(" z();\n h();")
               editor.setCursorBufferPosition([1, Infinity])
+
+              # The indentation of the non-standard line is unchanged.
               editor.pasteText()
               expect(editor.lineTextForBufferRow(1)).toBe("    y(); z();")
+              expect(editor.lineTextForBufferRow(2)).toBe(" h();")
 
         describe "when `autoIndentOnPaste` is false", ->
           beforeEach ->
@@ -3642,11 +3717,13 @@ describe "TextEditor", ->
     it "returns the indent level when the line has only leading tabs", ->
       expect(editor.indentLevelForLine("\t\thello")).toBe(2)
 
-    it "returns the indent level when the line has mixed leading whitespace and tabs", ->
+    it "returns the indent level based on the character starting the line when the leading whitespace contains both spaces and tabs", ->
       expect(editor.indentLevelForLine("\t  hello")).toBe(2)
       expect(editor.indentLevelForLine("  \thello")).toBe(2)
       expect(editor.indentLevelForLine("  \t hello")).toBe(2.5)
-      expect(editor.indentLevelForLine("  \t \thello")).toBe(3.5)
+      expect(editor.indentLevelForLine("    \t \thello")).toBe(4)
+      expect(editor.indentLevelForLine("     \t \thello")).toBe(4)
+      expect(editor.indentLevelForLine("     \t \t hello")).toBe(4.5)
 
   describe "when the buffer is reloaded", ->
     it "preserves the current cursor position", ->
@@ -4297,6 +4374,279 @@ describe "TextEditor", ->
         editor.checkoutHeadRevision()
 
         waitsForPromise -> editor.checkoutHeadRevision()
+
+  describe ".moveToPreviousSubwordBoundary", ->
+    it "does not move the cursor when there is no previous subword boundary", ->
+      editor.setText('')
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 0])
+
+    it "stops at word and underscore boundaries", ->
+      editor.setText("_word \n")
+      editor.setCursorBufferPosition([0, 6])
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 5])
+
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 1])
+
+      editor.setText(" word\n")
+      editor.setCursorBufferPosition([0, 3])
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 1])
+
+    it "stops at camelCase boundaries", ->
+      editor.setText(" getPreviousWord\n")
+      editor.setCursorBufferPosition([0, 16])
+
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 12])
+
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 4])
+
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 1])
+
+    it "skips consecutive non-word characters", ->
+      editor.setText("e, => \n")
+      editor.setCursorBufferPosition([0, 6])
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 3])
+
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 1])
+
+    it "skips consecutive uppercase characters", ->
+      editor.setText(" AAADF \n")
+      editor.setCursorBufferPosition([0, 7])
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 6])
+
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 1])
+
+      editor.setText("ALPhA\n")
+      editor.setCursorBufferPosition([0, 4])
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 2])
+
+    it "skips consecutive numbers", ->
+      editor.setText(" 88 \n")
+      editor.setCursorBufferPosition([0, 4])
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 3])
+
+      editor.moveToPreviousSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 1])
+
+    it "works with multiple cursors", ->
+      editor.setText("curOp\ncursorOptions\n")
+      editor.setCursorBufferPosition([0, 8])
+      editor.addCursorAtBufferPosition([1, 13])
+      [cursor1, cursor2] = editor.getCursors()
+
+      editor.moveToPreviousSubwordBoundary()
+
+      expect(cursor1.getBufferPosition()).toEqual([0, 3])
+      expect(cursor2.getBufferPosition()).toEqual([1, 6])
+
+  describe ".moveToNextSubwordBoundary", ->
+    it "does not move the cursor when there is no next subword boundary", ->
+      editor.setText('')
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 0])
+
+    it "stops at word and underscore boundaries", ->
+      editor.setText(" word_ \n")
+      editor.setCursorBufferPosition([0, 0])
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 1])
+
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 5])
+
+      editor.setText("word \n")
+      editor.setCursorBufferPosition([0, 0])
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 4])
+
+    it "stops at camelCase boundaries", ->
+      editor.setText("getPreviousWord \n")
+      editor.setCursorBufferPosition([0, 0])
+
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 3])
+
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 11])
+
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 15])
+
+    it "skips consecutive non-word characters", ->
+      editor.setText(", => \n")
+      editor.setCursorBufferPosition([0, 0])
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 1])
+
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 4])
+
+    it "skips consecutive uppercase characters", ->
+      editor.setText(" AAADF \n")
+      editor.setCursorBufferPosition([0, 0])
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 1])
+
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 6])
+
+      editor.setText("ALPhA\n")
+      editor.setCursorBufferPosition([0, 0])
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 2])
+
+    it "skips consecutive numbers", ->
+      editor.setText(" 88 \n")
+      editor.setCursorBufferPosition([0, 0])
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 1])
+
+      editor.moveToNextSubwordBoundary()
+      expect(editor.getCursorBufferPosition()).toEqual([0, 3])
+
+    it "works with multiple cursors", ->
+      editor.setText("curOp\ncursorOptions\n")
+      editor.setCursorBufferPosition([0, 0])
+      editor.addCursorAtBufferPosition([1, 0])
+      [cursor1, cursor2] = editor.getCursors()
+
+      editor.moveToNextSubwordBoundary()
+      expect(cursor1.getBufferPosition()).toEqual([0, 3])
+      expect(cursor2.getBufferPosition()).toEqual([1, 6])
+
+  describe ".selectToPreviousSubwordBoundary", ->
+    it "selects subwords", ->
+      editor.setText("")
+      editor.insertText("_word\n")
+      editor.insertText(" getPreviousWord\n")
+      editor.insertText("e, => \n")
+      editor.insertText(" 88 \n")
+      editor.setCursorBufferPosition([0, 5])
+      editor.addCursorAtBufferPosition([1, 7])
+      editor.addCursorAtBufferPosition([2, 5])
+      editor.addCursorAtBufferPosition([3, 3])
+      [selection1, selection2, selection3, selection4] = editor.getSelections()
+
+      editor.selectToPreviousSubwordBoundary()
+      expect(selection1.getBufferRange()).toEqual([[0, 1], [0, 5]])
+      expect(selection1.isReversed()).toBeTruthy()
+      expect(selection2.getBufferRange()).toEqual([[1, 4], [1, 7]])
+      expect(selection2.isReversed()).toBeTruthy()
+      expect(selection3.getBufferRange()).toEqual([[2, 3], [2, 5]])
+      expect(selection3.isReversed()).toBeTruthy()
+      expect(selection4.getBufferRange()).toEqual([[3, 1], [3, 3]])
+      expect(selection4.isReversed()).toBeTruthy()
+
+  describe ".selectToNextSubwordBoundary", ->
+    it "selects subwords", ->
+      editor.setText("")
+      editor.insertText("word_\n")
+      editor.insertText("getPreviousWord\n")
+      editor.insertText("e, => \n")
+      editor.insertText(" 88 \n")
+      editor.setCursorBufferPosition([0, 1])
+      editor.addCursorAtBufferPosition([1, 7])
+      editor.addCursorAtBufferPosition([2, 2])
+      editor.addCursorAtBufferPosition([3, 1])
+      [selection1, selection2, selection3, selection4] = editor.getSelections()
+
+      editor.selectToNextSubwordBoundary()
+      expect(selection1.getBufferRange()).toEqual([[0, 1], [0, 4]])
+      expect(selection1.isReversed()).toBeFalsy()
+      expect(selection2.getBufferRange()).toEqual([[1, 7], [1, 11]])
+      expect(selection2.isReversed()).toBeFalsy()
+      expect(selection3.getBufferRange()).toEqual([[2, 2], [2, 5]])
+      expect(selection3.isReversed()).toBeFalsy()
+      expect(selection4.getBufferRange()).toEqual([[3, 1], [3, 3]])
+      expect(selection4.isReversed()).toBeFalsy()
+
+  describe ".deleteToBeginningOfSubword", ->
+    it "deletes subwords", ->
+      editor.setText("")
+      editor.insertText("_word\n")
+      editor.insertText(" getPreviousWord\n")
+      editor.insertText("e, => \n")
+      editor.insertText(" 88 \n")
+      editor.setCursorBufferPosition([0, 5])
+      editor.addCursorAtBufferPosition([1, 7])
+      editor.addCursorAtBufferPosition([2, 5])
+      editor.addCursorAtBufferPosition([3, 3])
+      [cursor1, cursor2, cursor3, cursor4] = editor.getCursors()
+
+      editor.deleteToBeginningOfSubword()
+      expect(buffer.lineForRow(0)).toBe('_')
+      expect(buffer.lineForRow(1)).toBe(' getviousWord')
+      expect(buffer.lineForRow(2)).toBe('e,  ')
+      expect(buffer.lineForRow(3)).toBe('  ')
+      expect(cursor1.getBufferPosition()).toEqual([0, 1])
+      expect(cursor2.getBufferPosition()).toEqual([1, 4])
+      expect(cursor3.getBufferPosition()).toEqual([2, 3])
+      expect(cursor4.getBufferPosition()).toEqual([3, 1])
+
+      editor.deleteToBeginningOfSubword()
+      expect(buffer.lineForRow(0)).toBe('')
+      expect(buffer.lineForRow(1)).toBe(' viousWord')
+      expect(buffer.lineForRow(2)).toBe('e ')
+      expect(buffer.lineForRow(3)).toBe(' ')
+      expect(cursor1.getBufferPosition()).toEqual([0, 0])
+      expect(cursor2.getBufferPosition()).toEqual([1, 1])
+      expect(cursor3.getBufferPosition()).toEqual([2, 1])
+      expect(cursor4.getBufferPosition()).toEqual([3, 0])
+
+      editor.deleteToBeginningOfSubword()
+      expect(buffer.lineForRow(0)).toBe('')
+      expect(buffer.lineForRow(1)).toBe('viousWord')
+      expect(buffer.lineForRow(2)).toBe('  ')
+      expect(buffer.lineForRow(3)).toBe('')
+      expect(cursor1.getBufferPosition()).toEqual([0, 0])
+      expect(cursor2.getBufferPosition()).toEqual([1, 0])
+      expect(cursor3.getBufferPosition()).toEqual([2, 0])
+      expect(cursor4.getBufferPosition()).toEqual([2, 1])
+
+  describe ".deleteToEndOfSubword", ->
+    it "deletes subwords", ->
+      editor.setText("")
+      editor.insertText("word_\n")
+      editor.insertText("getPreviousWord \n")
+      editor.insertText("e, => \n")
+      editor.insertText(" 88 \n")
+      editor.setCursorBufferPosition([0, 0])
+      editor.addCursorAtBufferPosition([1, 0])
+      editor.addCursorAtBufferPosition([2, 2])
+      editor.addCursorAtBufferPosition([3, 0])
+      [cursor1, cursor2, cursor3, cursor4] = editor.getCursors()
+
+      editor.deleteToEndOfSubword()
+      expect(buffer.lineForRow(0)).toBe('_')
+      expect(buffer.lineForRow(1)).toBe('PreviousWord ')
+      expect(buffer.lineForRow(2)).toBe('e, ')
+      expect(buffer.lineForRow(3)).toBe('88 ')
+      expect(cursor1.getBufferPosition()).toEqual([0, 0])
+      expect(cursor2.getBufferPosition()).toEqual([1, 0])
+      expect(cursor3.getBufferPosition()).toEqual([2, 2])
+      expect(cursor4.getBufferPosition()).toEqual([3, 0])
+
+      editor.deleteToEndOfSubword()
+      expect(buffer.lineForRow(0)).toBe('')
+      expect(buffer.lineForRow(1)).toBe('Word ')
+      expect(buffer.lineForRow(2)).toBe('e,')
+      expect(buffer.lineForRow(3)).toBe(' ')
+      expect(cursor1.getBufferPosition()).toEqual([0, 0])
+      expect(cursor2.getBufferPosition()).toEqual([1, 0])
+      expect(cursor3.getBufferPosition()).toEqual([2, 2])
+      expect(cursor4.getBufferPosition()).toEqual([3, 0])
 
   describe 'gutters', ->
     describe 'the TextEditor constructor', ->

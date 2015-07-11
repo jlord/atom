@@ -1,5 +1,5 @@
 _ = require 'underscore-plus'
-{fork} = require 'child_process'
+ChildProcess = require 'child_process'
 {Emitter} = require 'emissary'
 Grim = require 'grim'
 
@@ -83,7 +83,7 @@ class Task
     taskPath = taskPath.replace(/\\/g, "\\\\")
 
     env = _.extend({}, process.env, {taskPath, userAgent: navigator.userAgent})
-    @childProcess = fork '--eval', [bootstrap], {env, silent: true}
+    @childProcess = ChildProcess.fork '--eval', [bootstrap], {env, silent: true}
 
     @on "task:log", -> console.log(arguments...)
     @on "task:warn", -> console.warn(arguments...)
@@ -100,11 +100,15 @@ class Task
     @childProcess.removeAllListeners()
     @childProcess.on 'message', ({event, args}) =>
       @emit(event, args...) if @childProcess?
+
     # Catch the errors that happened before task-bootstrap.
-    @childProcess.stdout.on 'data', (data) ->
-      console.log data.toString()
-    @childProcess.stderr.on 'data', (data) ->
-      console.error data.toString()
+    if @childProcess.stdout?
+      @childProcess.stdout.removeAllListeners()
+      @childProcess.stdout.on 'data', (data) -> console.log data.toString()
+
+    if @childProcess.stderr?
+      @childProcess.stderr.removeAllListeners()
+      @childProcess.stderr.on 'data', (data) -> console.error data.toString()
 
   # Public: Starts the task.
   #
@@ -149,10 +153,18 @@ class Task
   #
   # No more events are emitted once this method is called.
   terminate: ->
-    return unless @childProcess?
+    return false unless @childProcess?
 
     @childProcess.removeAllListeners()
+    @childProcess.stdout?.removeAllListeners()
+    @childProcess.stderr?.removeAllListeners()
     @childProcess.kill()
     @childProcess = null
 
-    undefined
+    true
+
+  cancel: ->
+    didForcefullyTerminate = @terminate()
+    if didForcefullyTerminate
+      @emit('task:cancelled')
+    didForcefullyTerminate

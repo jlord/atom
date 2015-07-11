@@ -107,7 +107,9 @@ parseCommandLine = ->
       ATOM_HOME               The root path for all configuration files and folders.
                               Defaults to `~/.atom`.
   """
-  options.alias('1', 'one').boolean('1').describe('1', 'Run in 1.0 API preview mode.')
+  # Deprecated 1.0 API preview flag
+  options.alias('1', 'one').boolean('1').describe('1', 'This option is no longer supported.')
+  options.boolean('include-deprecated-apis').describe('include-deprecated-apis', 'This option is not currently supported.')
   options.alias('d', 'dev').boolean('d').describe('d', 'Run in development mode.')
   options.alias('f', 'foreground').boolean('f').describe('f', 'Keep the browser process in the foreground.')
   options.alias('h', 'help').boolean('h').describe('h', 'Print this usage message.')
@@ -121,6 +123,7 @@ parseCommandLine = ->
   options.alias('v', 'version').boolean('v').describe('v', 'Print the version.')
   options.alias('w', 'wait').boolean('w').describe('w', 'Wait for window to be closed before returning.')
   options.string('socket-path')
+
   args = options.argv
 
   if args.help
@@ -134,7 +137,6 @@ parseCommandLine = ->
   executedFrom = args['executed-from']
   devMode = args['dev']
   safeMode = args['safe']
-  apiPreviewMode = args['one']
   pathsToOpen = args._
   test = args['test']
   specDirectory = args['spec-directory']
@@ -168,7 +170,6 @@ parseCommandLine = ->
   process.env.PATH = args['path-environment'] if args['path-environment']
 
   {resourcePath, pathsToOpen, executedFrom, test, version, pidToKillWhenClosed,
-   devMode, apiPreviewMode, safeMode, newWindow, specDirectory, logFile,
-   socketPath, profileStartup}
+   devMode, safeMode, newWindow, specDirectory, logFile, socketPath, profileStartup}
 
 start()

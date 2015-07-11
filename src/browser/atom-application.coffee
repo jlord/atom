@@ -6,6 +6,8 @@ BrowserWindow = require 'browser-window'
 StorageFolder = require '../storage-folder'
 Menu = require 'menu'
 app = require 'app'
+dialog = require 'dialog'
+shell = require 'shell'
 fs = require 'fs-plus'
 ipc = require 'ipc'
 path = require 'path'
@@ -61,7 +63,7 @@ class AtomApplication
   exit: (status) -> app.exit(status)
 
   constructor: (options) ->
-    {@resourcePath, @version, @devMode, @safeMode, @apiPreviewMode, @socketPath} = options
+    {@resourcePath, @version, @devMode, @safeMode, @socketPath} = options
 
     # Normalize to make sure drive letter case is consistent on Windows
     @resourcePath = path.normalize(@resourcePath) if @resourcePath
@@ -86,16 +88,16 @@ class AtomApplication
     else
       @loadState() or @openPath(options)
 
-  openWithOptions: ({pathsToOpen, urlsToOpen, test, pidToKillWhenClosed, devMode, safeMode, apiPreviewMode, newWindow, specDirectory, logFile, profileStartup}) ->
+  openWithOptions: ({pathsToOpen, urlsToOpen, test, pidToKillWhenClosed, devMode, safeMode, newWindow, specDirectory, logFile, profileStartup}) ->
     if test
-      @runSpecs({exitWhenDone: true, @resourcePath, specDirectory, logFile, apiPreviewMode})
+      @runSpecs({exitWhenDone: true, @resourcePath, specDirectory, logFile})
     else if pathsToOpen.length > 0
-      @openPaths({pathsToOpen, pidToKillWhenClosed, newWindow, devMode, safeMode, apiPreviewMode, profileStartup})
+      @openPaths({pathsToOpen, pidToKillWhenClosed, newWindow, devMode, safeMode, profileStartup})
     else if urlsToOpen.length > 0
-      @openUrl({urlToOpen, devMode, safeMode, apiPreviewMode}) for urlToOpen in urlsToOpen
+      @openUrl({urlToOpen, devMode, safeMode}) for urlToOpen in urlsToOpen
     else
       # Always open a editor window if this is the first instance of Atom.
-      @openPath({pidToKillWhenClosed, newWindow, devMode, safeMode, apiPreviewMode, profileStartup})
+      @openPath({pidToKillWhenClosed, newWindow, devMode, safeMode, profileStartup})
 
   # Public: Removes the {AtomWindow} from the global window list.
   removeWindow: (window) ->
@@ -105,7 +107,7 @@ class AtomApplication
         app.quit()
         return
     @windows.splice(@windows.indexOf(window), 1)
-    @saveState() unless window.isSpec or @quitting
+    @saveState(true) unless window.isSpec
 
   # Public: Adds the {AtomWindow} to the global window list.
   addWindow: (window) ->
@@ -116,14 +118,14 @@ class AtomApplication
 
     unless window.isSpec
       focusHandler = => @lastFocusedWindow = window
-      blurHandler = => @saveState()
+      blurHandler = => @saveState(false)
       window.browserWindow.on 'focus', focusHandler
       window.browserWindow.on 'blur', blurHandler
       window.browserWindow.once 'closed', =>
         @lastFocusedWindow = null if window is @lastFocusedWindow
         window.browserWindow.removeListener 'focus', focusHandler
         window.browserWindow.removeListener 'blur', blurHandler
-      window.browserWindow.webContents.once 'did-finish-load', => @saveState()
+      window.browserWindow.webContents.once 'did-finish-load', => @saveState(false)
 
   # Creates server to listen for additional atom application launches.
   #
@@ -160,7 +162,6 @@ class AtomApplication
     getLoadSettings = =>
       devMode: @focusedWindow()?.devMode
       safeMode: @focusedWindow()?.safeMode
-      apiPreviewMode: @focusedWindow()?.apiPreviewMode
 
     @on 'application:run-all-specs', -> @runSpecs(exitWhenDone: false, resourcePath: global.devResourcePath, safeMode: @focusedWindow()?.safeMode)
     @on 'application:run-benchmarks', -> @runBenchmarks()
@@ -172,21 +173,22 @@ class AtomApplication
     @on 'application:open-folder', -> @promptForPathToOpen('folder', getLoadSettings())
     @on 'application:open-dev', -> @promptForPathToOpen('all', devMode: true)
     @on 'application:open-safe', -> @promptForPathToOpen('all', safeMode: true)
-    @on 'application:open-api-preview', -> @promptForPathToOpen('all', apiPreviewMode: true)
-    @on 'application:open-dev-api-preview', -> @promptForPathToOpen('all', {apiPreviewMode: true, devMode: true})
     @on 'application:inspect', ({x, y, atomWindow}) ->
       atomWindow ?= @focusedWindow()
       atomWindow?.browserWindow.inspectElement(x, y)
 
-    @on 'application:open-documentation', -> require('shell').openExternal('https://atom.io/docs/latest/?app')
-    @on 'application:open-discussions', -> require('shell').openExternal('https://discuss.atom.io')
-    @on 'application:open-roadmap', -> require('shell').openExternal('https://atom.io/roadmap?app')
-    @on 'application:open-faq', -> require('shell').openExternal('https://atom.io/faq')
-    @on 'application:open-terms-of-use', -> require('shell').openExternal('https://atom.io/terms')
-    @on 'application:report-issue', -> require('shell').openExternal('https://github.com/atom/atom/blob/master/CONTRIBUTING.md#submitting-issues')
-    @on 'application:search-issues', -> require('shell').openExternal('https://github.com/issues?q=+is%3Aissue+user%3Aatom')
+    @on 'application:open-documentation', -> shell.openExternal('https://atom.io/docs/latest/?app')
+    @on 'application:open-discussions', -> shell.openExternal('https://discuss.atom.io')
+    @on 'application:open-roadmap', -> shell.openExternal('https://atom.io/roadmap?app')
+    @on 'application:open-faq', -> shell.openExternal('https://atom.io/faq')
+    @on 'application:open-terms-of-use', -> shell.openExternal('https://atom.io/terms')
+    @on 'application:report-issue', -> shell.openExternal('https://github.com/atom/atom/blob/master/CONTRIBUTING.md#submitting-issues')
+    @on 'application:search-issues', -> shell.openExternal('https://github.com/issues?q=+is%3Aissue+user%3Aatom')
 
-    @on 'application:install-update', => @autoUpdateManager.install()
+    @on 'application:install-update', =>
+      @quitting = true
+      @autoUpdateManager.install()
+
     @on 'application:check-for-update', => @autoUpdateManager.check()
 
     if process.platform is 'darwin'
@@ -210,7 +212,7 @@ class AtomApplication
     @openPathOnEvent('application:open-license', path.join(process.resourcesPath, 'LICENSE.md'))
 
     app.on 'before-quit', =>
-      @saveState() if @hasEditorWindows()
+      @saveState(false)
       @quitting = true
 
     app.on 'will-quit', =>
@@ -218,7 +220,7 @@ class AtomApplication
       @deleteSocketFile()
 
     app.on 'will-exit', =>
-      @saveState() if @hasEditorWindows()
+      @saveState(false)
       @killAllProcesses()
       @deleteSocketFile()
 
@@ -228,7 +230,7 @@ class AtomApplication
 
     app.on 'open-url', (event, urlToOpen) =>
       event.preventDefault()
-      @openUrl({urlToOpen, @devMode, @safeMode, @apiPreviewMode})
+      @openUrl({urlToOpen, @devMode, @safeMode})
 
     app.on 'activate-with-no-open-windows', (event) =>
       event.preventDefault()
@@ -270,9 +272,11 @@ class AtomApplication
       @promptForPath "folder", (selectedPaths) ->
         event.sender.send(responseChannel, selectedPaths)
 
-    clipboard = null
+    ipc.on 'cancel-window-close', =>
+      @quitting = false
+
+    clipboard = require '../safe-clipboard'
     ipc.on 'write-text-to-selection-clipboard', (event, selectedText) ->
-      clipboard ?= require '../safe-clipboard'
       clipboard.writeText(selectedText, 'selection')
 
   # Public: Executes the given command.
@@ -352,11 +356,10 @@ class AtomApplication
   #   :newWindow - Boolean of whether this should be opened in a new window.
   #   :devMode - Boolean to control the opened window's dev mode.
   #   :safeMode - Boolean to control the opened window's safe mode.
-  #   :apiPreviewMode - Boolean to control the opened window's 1.0 API preview mode.
   #   :profileStartup - Boolean to control creating a profile of the startup time.
   #   :window - {AtomWindow} to open file paths in.
-  openPath: ({pathToOpen, pidToKillWhenClosed, newWindow, devMode, safeMode, apiPreviewMode, profileStartup, window}) ->
-    @openPaths({pathsToOpen: [pathToOpen], pidToKillWhenClosed, newWindow, devMode, safeMode, apiPreviewMode, profileStartup, window})
+  openPath: ({pathToOpen, pidToKillWhenClosed, newWindow, devMode, safeMode, profileStartup, window}) ->
+    @openPaths({pathsToOpen: [pathToOpen], pidToKillWhenClosed, newWindow, devMode, safeMode, profileStartup, window})
 
   # Public: Opens multiple paths, in existing windows if possible.
   #
@@ -366,10 +369,9 @@ class AtomApplication
   #   :newWindow - Boolean of whether this should be opened in a new window.
   #   :devMode - Boolean to control the opened window's dev mode.
   #   :safeMode - Boolean to control the opened window's safe mode.
-  #   :apiPreviewMode - Boolean to control the opened window's 1.0 API preview mode.
   #   :windowDimensions - Object with height and width keys.
   #   :window - {AtomWindow} to open file paths in.
-  openPaths: ({pathsToOpen, pidToKillWhenClosed, newWindow, devMode, safeMode, apiPreviewMode, windowDimensions, profileStartup, window}={}) ->
+  openPaths: ({pathsToOpen, pidToKillWhenClosed, newWindow, devMode, safeMode, windowDimensions, profileStartup, window}={}) ->
     pathsToOpen = pathsToOpen.map (pathToOpen) ->
       if fs.existsSync(pathToOpen)
         fs.normalize(pathToOpen)
@@ -404,7 +406,7 @@ class AtomApplication
 
       bootstrapScript ?= require.resolve('../window-bootstrap')
       resourcePath ?= @resourcePath
-      openedWindow = new AtomWindow({locationsToOpen, bootstrapScript, resourcePath, devMode, safeMode, apiPreviewMode, windowDimensions, profileStartup})
+      openedWindow = new AtomWindow({locationsToOpen, bootstrapScript, resourcePath, devMode, safeMode, windowDimensions, profileStartup})
 
     if pidToKillWhenClosed?
       @pidsToOpenWindows[pidToKillWhenClosed] = openedWindow
@@ -433,16 +435,15 @@ class AtomApplication
         console.log("Killing process #{pid} failed: #{error.code ? error.message}")
     delete @pidsToOpenWindows[pid]
 
-  saveState: ->
+  saveState: (allowEmpty=false) ->
+    return if @quitting
     states = []
     for window in @windows
       unless window.isSpec
         if loadSettings = window.getLoadSettings()
           states.push(initialPaths: loadSettings.initialPaths)
-    @storageFolder.store('application.json', states)
-
-  hasEditorWindows: ->
-    @windows.some (window) -> not window.isSpec
+    if states.length > 0 or allowEmpty
+      @storageFolder.store('application.json', states)
 
   loadState: ->
     if (states = @storageFolder.load('application.json'))?.length > 0
@@ -452,7 +453,6 @@ class AtomApplication
           urlsToOpen: []
           devMode: @devMode
           safeMode: @safeMode
-          apiPreviewMode: @apiPreviewMode
         })
       true
     else
@@ -498,7 +498,7 @@ class AtomApplication
   #   :specPath - The directory to load specs from.
   #   :safeMode - A Boolean that, if true, won't run specs from ~/.atom/packages
   #               and ~/.atom/dev/packages, defaults to false.
-  runSpecs: ({exitWhenDone, resourcePath, specDirectory, logFile, safeMode, apiPreviewMode}) ->
+  runSpecs: ({exitWhenDone, resourcePath, specDirectory, logFile, safeMode}) ->
     if resourcePath isnt @resourcePath and not fs.existsSync(resourcePath)
       resourcePath = @resourcePath
 
@@ -510,8 +510,7 @@ class AtomApplication
     isSpec = true
     devMode = true
     safeMode ?= false
-    apiPreviewMode ?= false
-    new AtomWindow({bootstrapScript, resourcePath, exitWhenDone, isSpec, devMode, specDirectory, logFile, safeMode, apiPreviewMode})
+    new AtomWindow({bootstrapScript, resourcePath, exitWhenDone, isSpec, devMode, specDirectory, logFile, safeMode})
 
   runBenchmarks: ({exitWhenDone, specDirectory}={}) ->
     try
@@ -554,9 +553,9 @@ class AtomApplication
   #   :safeMode - A Boolean which controls whether any newly opened windows
   #               should be in safe mode or not.
   #   :window - An {AtomWindow} to use for opening a selected file path.
-  promptForPathToOpen: (type, {devMode, safeMode, apiPreviewMode, window}) ->
+  promptForPathToOpen: (type, {devMode, safeMode, window}) ->
     @promptForPath type, (pathsToOpen) =>
-      @openPaths({pathsToOpen, devMode, safeMode, apiPreviewMode, window})
+      @openPaths({pathsToOpen, devMode, safeMode, window})
 
   promptForPath: (type, callback) ->
     properties =
@@ -576,11 +575,13 @@ class AtomApplication
 
     openOptions =
       properties: properties.concat(['multiSelections', 'createDirectory'])
-      title: 'Open'
+      title: switch type
+        when 'file' then 'Open File'
+        when 'folder' then 'Open Folder'
+        else 'Open'
 
     if process.platform is 'linux'
       if projectPath = @lastFocusedWindow?.projectPath
         openOptions.defaultPath = projectPath
 
-    dialog = require 'dialog'
     dialog.showOpenDialog(parentWindow, openOptions, callback)

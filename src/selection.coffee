@@ -84,7 +84,7 @@ class Selection extends Model
 
   # Public: Modifies the buffer {Range} for the selection.
   #
-  # * `screenRange` The new {Range} to select.
+  # * `bufferRange` The new {Range} to select.
   # * `options` (optional) {Object} with the keys:
   #   * `preserveFolds` if `true`, the fold settings are preserved after the
   #     selection moves.
@@ -290,6 +290,14 @@ class Selection extends Model
   selectToNextWordBoundary: ->
     @modifySelection => @cursor.moveToNextWordBoundary()
 
+  # Public: Selects text to the previous subword boundary.
+  selectToPreviousSubwordBoundary: ->
+    @modifySelection => @cursor.moveToPreviousSubwordBoundary()
+
+  # Public: Selects text to the next subword boundary.
+  selectToNextSubwordBoundary: ->
+    @modifySelection => @cursor.moveToNextSubwordBoundary()
+
   # Public: Selects all the text from the current cursor position to the
   # beginning of the next paragraph.
   selectToBeginningOfNextParagraph: ->
@@ -366,7 +374,7 @@ class Selection extends Model
       indentAdjustment = @editor.indentLevelForLine(precedingText) - options.indentBasis
       @adjustIndent(remainingLines, indentAdjustment)
 
-    if options.autoIndent and not NonWhitespaceRegExp.test(precedingText)
+    if options.autoIndent and not NonWhitespaceRegExp.test(precedingText) and remainingLines.length > 0
       autoIndentFirstLine = true
       firstLine = precedingText + firstInsertedLine
       desiredIndentLevel = @editor.languageMode.suggestedIndentForLineAtBufferRow(oldBufferRange.start.row, firstLine)
@@ -456,6 +464,18 @@ class Selection extends Model
   # selection to the end of the current word if nothing is selected.
   deleteToEndOfWord: ->
     @selectToEndOfWord() if @isEmpty()
+    @deleteSelectedText()
+
+  # Public: Removes the selection or all characters from the start of the
+  # selection to the end of the current word if nothing is selected.
+  deleteToBeginningOfSubword: ->
+    @selectToPreviousSubwordBoundary() if @isEmpty()
+    @deleteSelectedText()
+
+  # Public: Removes the selection or all characters from the start of the
+  # selection to the end of the current word if nothing is selected.
+  deleteToEndOfSubword: ->
+    @selectToNextSubwordBoundary() if @isEmpty()
     @deleteSelectedText()
 
   # Public: Removes only the selected text.
