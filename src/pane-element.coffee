@@ -152,13 +152,13 @@ atom.commands.add 'atom-workspace',
 
 atom.commands.add 'atom-pane',
   'pane:save-items': -> @getModel().saveItems()
-  'pane:move-item-right': -> @getModel().moveItemRight()
-  'pane:move-item-left': -> @getModel().moveItemLeft()
   'pane:split-left': -> @getModel().splitLeft(copyActiveItem: true)
   'pane:split-right': -> @getModel().splitRight(copyActiveItem: true)
   'pane:split-up': -> @getModel().splitUp(copyActiveItem: true)
   'pane:split-down': -> @getModel().splitDown(copyActiveItem: true)
   'pane:close': -> @getModel().close()
   'pane:close-other-items': -> @getModel().destroyInactiveItems()
+  'pane:increase-size': -> @getModel().increaseSize()
+  'pane:decrease-size': -> @getModel().decreaseSize()
 
 module.exports = PaneElement = document.registerElement 'atom-pane', prototype: PaneElement.prototype

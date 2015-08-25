@@ -468,11 +468,11 @@ class Workspace extends Model
         pane.activate() if activatePane
 
         initialLine = initialColumn = 0
-        if Number.isFinite(options.initialLine)
+        unless Number.isNaN(options.initialLine)
           initialLine = options.initialLine
-        if Number.isFinite(options.initialColumn)
+        unless Number.isNaN(options.initialColumn)
           initialColumn = options.initialColumn
-        if initialLine > 0 or initialColumn > 0
+        if initialLine >= 0 or initialColumn >= 0
           item.setCursorBufferPosition?([initialLine, initialColumn])
 
         index = pane.getActiveItemIndex()
@@ -779,9 +779,9 @@ class Workspace extends Model
   # Essential: Adds a panel item as a modal dialog.
   #
   # * `options` {Object}
-  #   * `item` Your panel content. It can be DOM element, a jQuery element, or
+  #   * `item` Your panel content. It can be a DOM element, a jQuery element, or
   #     a model with a view registered via {ViewRegistry::addViewProvider}. We recommend the
-  #     latter. See {ViewRegistry::addViewProvider} for more information.
+  #     model option. See {ViewRegistry::addViewProvider} for more information.
   #   * `visible` (optional) {Boolean} false if you want the panel to initially be hidden
   #     (default: true)
   #   * `priority` (optional) {Number} Determines stacking order. Lower priority items are

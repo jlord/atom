@@ -1,6 +1,9 @@
 fs = require 'fs'
 path = require 'path'
 os = require 'os'
+glob = require 'glob'
+usesBabel = require './lib/uses-babel'
+babelOptions = require '../static/babelrc'
 
 # Add support for obselete APIs of vm module so we can make some third-party
 # modules work under node v0.11.x.
@@ -10,13 +13,11 @@ _ = require 'underscore-plus'
 
 packageJson = require '../package.json'
 
-# Shim harmony collections in case grunt was invoked without harmony
-# collections enabled
-_.extend(global, require('harmony-collections')) unless global.WeakMap?
-
 module.exports = (grunt) ->
+  grunt.loadNpmTasks('grunt-babel')
   grunt.loadNpmTasks('grunt-coffeelint')
   grunt.loadNpmTasks('grunt-lesslint')
+  grunt.loadNpmTasks('grunt-standard')
   grunt.loadNpmTasks('grunt-cson')
   grunt.loadNpmTasks('grunt-contrib-csslint')
   grunt.loadNpmTasks('grunt-contrib-coffee')
@@ -72,6 +73,11 @@ module.exports = (grunt) ->
       ]
       dest: appDir
       ext: '.js'
+
+  babelConfig =
+    options: babelOptions
+    dist:
+      files: []
 
   lessConfig =
     options:
@@ -137,12 +143,21 @@ module.exports = (grunt) ->
 
       pegConfig.glob_to_multiple.src.push("#{directory}/lib/*.pegjs")
 
+      for jsFile in glob.sync("#{directory}/lib/**/*.js")
+        if usesBabel(jsFile)
+          babelConfig.dist.files.push({
+            src: [jsFile]
+            dest: path.join(appDir, jsFile)
+          })
+
   grunt.initConfig
     pkg: grunt.file.readJSON('package.json')
 
     atom: {appDir, appName, symbolsDir, buildDir, contentsDir, installDir, shellAppDir}
 
     docsOutputDir: 'docs/output'
+
+    babel: babelConfig
 
     coffee: coffeeConfig
 
@@ -168,6 +183,12 @@ module.exports = (grunt) ->
       ]
       test: [
         'spec/*.coffee'
+      ]
+
+    standard:
+      src: [
+        'src/**/*.js'
+        'static/*.js'
       ]
 
     csslint:
@@ -225,17 +246,19 @@ module.exports = (grunt) ->
           stderr: false
           failOnError: false
 
-  grunt.registerTask('compile', ['coffee', 'prebuild-less', 'cson', 'peg'])
-  grunt.registerTask('lint', ['coffeelint', 'csslint', 'lesslint'])
+  grunt.registerTask('compile', ['babel', 'coffee', 'prebuild-less', 'cson', 'peg'])
+  grunt.registerTask('lint', ['standard', 'coffeelint', 'csslint', 'lesslint'])
   grunt.registerTask('test', ['shell:kill-atom', 'run-specs'])
 
   ciTasks = ['output-disk-space', 'download-electron', 'download-electron-chromedriver', 'build']
   ciTasks.push('dump-symbols') if process.platform isnt 'win32'
   ciTasks.push('set-version', 'check-licenses', 'lint', 'generate-asar')
   ciTasks.push('mkdeb') if process.platform is 'linux'
+  ciTasks.push('codesign:exe') if process.platform is 'win32' and not process.env.TRAVIS
   ciTasks.push('create-windows-installer:installer') if process.platform is 'win32'
   ciTasks.push('test') if process.platform is 'darwin'
-  ciTasks.push('codesign') unless process.env.TRAVIS
+  ciTasks.push('codesign:installer') if process.platform is 'win32' and not process.env.TRAVIS
+  ciTasks.push('codesign:app') if process.platform is 'darwin' and not process.env.TRAVIS
   ciTasks.push('publish-build') unless process.env.TRAVIS
   grunt.registerTask('ci', ciTasks)
 

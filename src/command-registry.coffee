@@ -175,20 +175,22 @@ class CommandRegistry
   # * `commandName` {String} indicating the name of the command to dispatch.
   dispatch: (target, commandName, detail) ->
     event = new CustomEvent(commandName, {bubbles: true, detail})
-    eventWithTarget = Object.create {},
-      target: value: target
-      preventDefault: value: ->
-      stopPropagation: value: ->
-      stopImmediatePropagation: value: ->
-    # NOTE: In Chrome 43, Object.create doesn't work well with CustomEvent;
-    # However utilizing _.defaults here doesn't really do anything since all properties have been
-    # moved from "own" to the prototype, so we should update this to fully shadowing the properties
-    # from Event.prototype (+ detail property from CustomEvent).
-    eventWithTarget = _.defaults(eventWithTarget, event)
-    @handleCommandEvent(eventWithTarget)
+    Object.defineProperty(event, 'target', value: target)
+    @handleCommandEvent(event)
 
+  # Public: Invoke the given callback before dispatching a command event.
+  #
+  # * `callback` {Function} to be called before dispatching each command
+  #   * `event` The Event that will be dispatched
   onWillDispatch: (callback) ->
     @emitter.on 'will-dispatch', callback
+
+  # Public: Invoke the given callback after dispatching a command event.
+  #
+  # * `callback` {Function} to be called after dispatching each command
+  #   * `event` The Event that was dispatched
+  onDidDispatch: (callback) ->
+    @emitter.on 'did-dispatch', callback
 
   getSnapshot: ->
     snapshot = {}
@@ -202,10 +204,11 @@ class CommandRegistry
       @selectorBasedListenersByCommandName[commandName] = listeners.slice()
     return
 
-  handleCommandEvent: (originalEvent) =>
+  handleCommandEvent: (event) =>
     propagationStopped = false
     immediatePropagationStopped = false
     matched = false
+<<<<<<< HEAD
     currentTarget = originalEvent.target
 
     syntheticEvent = Object.create {},
@@ -227,12 +230,34 @@ class CommandRegistry
     syntheticEvent = _.defaults(syntheticEvent, originalEvent)
 
     @emitter.emit 'will-dispatch', syntheticEvent
+=======
+    currentTarget = event.target
+    {preventDefault, stopPropagation, stopImmediatePropagation, abortKeyBinding} = event
+
+    dispatchedEvent = new CustomEvent(event.type, {bubbles: true, detail: event.detail})
+    Object.defineProperty dispatchedEvent, 'eventPhase', value: Event.BUBBLING_PHASE
+    Object.defineProperty dispatchedEvent, 'currentTarget', get: -> currentTarget
+    Object.defineProperty dispatchedEvent, 'target', value: currentTarget
+    Object.defineProperty dispatchedEvent, 'preventDefault', value: ->
+      event.preventDefault()
+    Object.defineProperty dispatchedEvent, 'stopPropagation', value: ->
+      event.stopPropagation()
+      propagationStopped = true
+    Object.defineProperty dispatchedEvent, 'stopImmediatePropagation', value: ->
+      event.stopImmediatePropagation()
+      propagationStopped = true
+      immediatePropagationStopped = true
+    Object.defineProperty dispatchedEvent, 'abortKeyBinding', value: ->
+      event.abortKeyBinding?()
+
+    @emitter.emit 'will-dispatch', dispatchedEvent
+>>>>>>> tj-29
 
     loop
-      listeners = @inlineListenersByCommandName[originalEvent.type]?.get(currentTarget) ? []
+      listeners = @inlineListenersByCommandName[event.type]?.get(currentTarget) ? []
       if currentTarget.webkitMatchesSelector?
         selectorBasedListeners =
-          (@selectorBasedListenersByCommandName[originalEvent.type] ? [])
+          (@selectorBasedListenersByCommandName[event.type] ? [])
             .filter (listener) -> currentTarget.webkitMatchesSelector(listener.selector)
             .sort (a, b) -> a.compare(b)
         listeners = listeners.concat(selectorBasedListeners)
@@ -241,11 +266,13 @@ class CommandRegistry
 
       for listener in listeners
         break if immediatePropagationStopped
-        listener.callback.call(currentTarget, syntheticEvent)
+        listener.callback.call(currentTarget, dispatchedEvent)
 
       break if currentTarget is window
       break if propagationStopped
       currentTarget = currentTarget.parentNode ? window
+
+    @emitter.emit 'did-dispatch', dispatchedEvent
 
     matched
 
